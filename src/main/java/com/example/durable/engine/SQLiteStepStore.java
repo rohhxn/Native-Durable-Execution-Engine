@@ -5,11 +5,11 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
-import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,24 +30,36 @@ public final class SQLiteStepStore {
 
     private void init() {
         withRetry(conn -> {
-            conn.createStatement().execute("PRAGMA journal_mode=WAL");
-            conn.createStatement().execute("PRAGMA busy_timeout=5000");
-            conn.createStatement().execute(
-                    "CREATE TABLE IF NOT EXISTS steps (" +
-                            "workflow_id TEXT NOT NULL," +
-                            "step_key TEXT NOT NULL," +
-                            "step_id TEXT NOT NULL," +
-                            "sequence INTEGER NOT NULL," +
-                            "status TEXT NOT NULL," +
-                            "output TEXT," +
-                            "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
-                            "PRIMARY KEY (workflow_id, step_key))");
-            return null;
+            try {
+                try (Statement stmt = conn.createStatement()) {
+                    stmt.execute("PRAGMA journal_mode=WAL");
+                    stmt.execute("PRAGMA busy_timeout=5000");
+                    stmt.execute(
+                            "CREATE TABLE IF NOT EXISTS steps (" +
+                                    "workflow_id TEXT NOT NULL," +
+                                    "step_key TEXT NOT NULL," +
+                                    "step_id TEXT NOT NULL," +
+                                    "sequence INTEGER NOT NULL," +
+                                    "status TEXT NOT NULL," +
+                                    "output TEXT," +
+                                    "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
+                                    "PRIMARY KEY (workflow_id, step_key))");
+                }
+                return null;
+            } catch (SQLException e) {
+                throw new IllegalStateException("Failed to initialize SQLite", e);
+            }
         });
     }
 
     public Optional<StepRecord> find(String workflowId, String stepKey) {
-        return withRetry(conn -> select(workflowId, stepKey, conn));
+        return withRetry(conn -> {
+            try {
+                return select(workflowId, stepKey, conn);
+            } catch (SQLException e) {
+                throw new IllegalStateException("Failed to query step", e);
+            }
+        });
     }
 
     void insertInProgress(StepRecord record, Connection conn) throws SQLException {
@@ -59,11 +71,23 @@ public final class SQLiteStepStore {
     }
 
     public void insertInProgress(StepRecord record) {
-        withRetry(conn -> insert(record, conn));
+        withRetry(conn -> {
+            try {
+                return insert(record, conn);
+            } catch (SQLException e) {
+                throw new IllegalStateException("Failed to insert step", e);
+            }
+        });
     }
 
     public void updateStatus(StepRecord record) {
-        withRetry(conn -> update(record, conn));
+        withRetry(conn -> {
+            try {
+                return update(record, conn);
+            } catch (SQLException e) {
+                throw new IllegalStateException("Failed to update step", e);
+            }
+        });
     }
 
     public void markFailedIfStale(StepRecord record) {
@@ -74,7 +98,7 @@ public final class SQLiteStepStore {
         }
     }
 
-    public <T> T withTransaction(Function<Connection, T> work) {
+    public <T> T withTransaction(SqlFunction<Connection, T> work) {
         return withRetry(conn -> {
             try {
                 conn.setAutoCommit(false);
@@ -88,6 +112,10 @@ public final class SQLiteStepStore {
                     log.error("Rollback failed", re);
                 }
                 if (e instanceof SQLException se) {
+                    if (isBusy(se)) {
+                        // Propagate busy to be retried by withRetry
+                        throw se;
+                    }
                     throw new IllegalStateException("SQLite transaction failed", se);
                 }
                 throw e;
@@ -157,14 +185,14 @@ public final class SQLiteStepStore {
         }
     }
 
-    private <T> T withRetry(Function<Connection, T> work) {
+    private <T> T withRetry(SqlFunction<Connection, T> work) {
         int attempt = 0;
         while (true) {
             try (Connection conn = DriverManager.getConnection(jdbcUrl)) {
                 conn.setAutoCommit(true);
                 return work.apply(conn);
             } catch (SQLException e) {
-                if ("SQLITE_BUSY".equals(e.getSQLState()) || e.getMessage().contains("database is locked")) {
+                if (isBusy(e)) {
                     if (attempt >= MAX_BUSY_RETRIES) {
                         throw new IllegalStateException("SQLite busy after retries", e);
                     }
@@ -180,5 +208,14 @@ public final class SQLiteStepStore {
                 throw new IllegalStateException("SQLite operation failed", e);
             }
         }
+    }
+
+    private boolean isBusy(SQLException e) {
+        return "SQLITE_BUSY".equals(e.getSQLState()) || (e.getMessage() != null && e.getMessage().contains("database is locked"));
+    }
+
+    @FunctionalInterface
+    interface SqlFunction<T, R> {
+        R apply(T t) throws SQLException;
     }
 }

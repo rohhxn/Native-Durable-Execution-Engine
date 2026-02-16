@@ -1,5 +1,6 @@
 package com.example.durable.engine;
 
+import java.sql.SQLException;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 
@@ -74,6 +75,12 @@ public final class StepExecutor {
                 store.updateStatus(completed, conn);
                 return result;
             } catch (Exception e) {
+                if (isBusy(e)) {
+                    // Let withRetry handle SQLITE_BUSY retries
+                    if (e instanceof SQLException se) {
+                        throw se;
+                    }
+                }
                 try {
                     StepRecord failed = new StepRecord(workflowId, stepKey, stepId, sequence, StepStatus.FAILED, null, null);
                     store.updateStatus(failed, conn);
@@ -83,5 +90,17 @@ public final class StepExecutor {
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    private boolean isBusy(Exception e) {
+        Throwable t = e;
+        while (t != null) {
+            if (t instanceof SQLException se && "SQLITE_BUSY".equals(se.getSQLState()) ||
+                    (t.getMessage() != null && t.getMessage().contains("database is locked"))) {
+                return true;
+            }
+            t = t.getCause();
+        }
+        return false;
     }
 }

@@ -9,7 +9,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 
 import java.time.Duration;
 import java.util.concurrent.Callable;
-import java.util.concurrent.StructuredTaskScope;
 
 public final class DurableContext {
     private final StepExecutor executor;
@@ -32,7 +31,7 @@ public final class DurableContext {
     }
 
     public <T> T step(String stepId, Callable<T> fn) throws Exception {
-        return executor.step(stepId, Object.class, fn);
+        return executor.step(stepId, new TypeReference<T>() {}, fn);
     }
 
     public long reserveSequence() {

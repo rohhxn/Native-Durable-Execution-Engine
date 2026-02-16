@@ -1,11 +1,10 @@
 package com.example.durable.example;
 
-import com.example.durable.DurableContext;
-import com.example.durable.Workflow;
-
-import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.StructuredTaskScope;
+
+import com.example.durable.DurableContext;
+import com.example.durable.Workflow;
 
 public final class OnboardingWorkflow implements Workflow {
     @Override
